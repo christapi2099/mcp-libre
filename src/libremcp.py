@@ -8,6 +8,7 @@ and other LibreOffice formats.
 
 import asyncio
 import json
+import os
 import subprocess
 import tempfile
 import time
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from dataclasses import dataclass
 from datetime import datetime
+from xml.sax.saxutils import escape as _xml_escape
 
 import httpx
 from pydantic import BaseModel, Field
@@ -61,6 +63,20 @@ class SpreadsheetData(BaseModel):
     col_count: int = Field(description="Number of columns")
 
 
+# Path sandbox — tool arguments may only resolve inside these prefixes.
+# Keep /tmp to allow LibreOffice's own temp-file round-trips.
+_ALLOWED_PREFIXES = (str(Path.home().resolve()), '/tmp')
+
+def _safe_path(p: str) -> Path:
+    resolved = Path(p).resolve()
+    if not any(str(resolved).startswith(prefix) for prefix in _ALLOWED_PREFIXES):
+        raise ValueError(f"Path '{p}' is outside allowed directories {_ALLOWED_PREFIXES}")
+    return resolved
+
+# Validated conversion format allowlist
+_ALLOWED_FORMATS = {'pdf', 'docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp', 'txt', 'html', 'csv'}
+
+
 # Helper functions
 def _run_libreoffice_command(args: List[str], timeout: int = 30) -> subprocess.CompletedProcess:
     """Run a LibreOffice command with proper error handling"""
@@ -88,7 +104,7 @@ def _run_libreoffice_command(args: List[str], timeout: int = 30) -> subprocess.C
 
 def _get_document_info(file_path: str) -> DocumentInfo:
     """Get information about a document file"""
-    path = Path(file_path)
+    path = _safe_path(file_path)
     return DocumentInfo(
         path=str(path.absolute()),
         filename=path.name,
@@ -110,7 +126,7 @@ def create_document(path: str, doc_type: str = "writer", content: str = "") -> D
         doc_type: Type of document to create (writer, calc, impress, draw)
         content: Initial content for the document (for writer documents)
     """
-    path_obj = Path(path)
+    path_obj = _safe_path(path)
     
     # Ensure directory exists
     path_obj.parent.mkdir(parents=True, exist_ok=True)
@@ -129,7 +145,7 @@ def create_document(path: str, doc_type: str = "writer", content: str = "") -> D
     # Add appropriate extension if not present
     if not path_obj.suffix:
         path = str(path_obj) + format_map[doc_type]
-        path_obj = Path(path)
+        path_obj = _safe_path(path)
     
     try:
         if doc_type == "writer" and content:
@@ -178,7 +194,7 @@ def create_document(path: str, doc_type: str = "writer", content: str = "") -> D
 <office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">
  <office:body>
   <office:text>
-   <text:p>{content}</text:p>
+   <text:p>{_xml_escape(content)}</text:p>
   </office:text>
  </office:body>
 </office:document-content>'''
@@ -254,7 +270,7 @@ def read_document_text(path: str) -> TextContent:
     Args:
         path: Path to the document file
     """
-    path_obj = Path(path)
+    path_obj = _safe_path(path)
     if not path_obj.exists():
         raise FileNotFoundError(f"Document not found: {path}")
     
@@ -356,9 +372,11 @@ def convert_document(source_path: str, target_path: str, target_format: str) -> 
         target_path: Path where converted document should be saved
         target_format: Target format (pdf, docx, xlsx, pptx, html, txt, etc.)
     """
-    source_obj = Path(source_path)
-    target_obj = Path(target_path)
-    
+    if target_format.lower() not in _ALLOWED_FORMATS:
+        raise ValueError(f"target_format '{target_format}' not allowed. Use one of: {sorted(_ALLOWED_FORMATS)}")
+    source_obj = _safe_path(source_path)
+    target_obj = _safe_path(target_path)
+
     if not source_obj.exists():
         return ConversionResult(
             source_path=source_path,
@@ -429,7 +447,7 @@ def read_spreadsheet_data(path: str, sheet_name: Optional[str] = None, max_rows:
         sheet_name: Name of the specific sheet to read (if None, reads first sheet)
         max_rows: Maximum number of rows to read (default 100)
     """
-    path_obj = Path(path)
+    path_obj = _safe_path(path)
     if not path_obj.exists():
         raise FileNotFoundError(f"Spreadsheet not found: {path}")
     
@@ -480,7 +498,7 @@ def insert_text_at_position(path: str, text: str, position: str = "end") -> Docu
         text: Text to insert
         position: Where to insert the text ("start", "end", or "replace")
     """
-    path_obj = Path(path)
+    path_obj = _safe_path(path)
     if not path_obj.exists():
         raise FileNotFoundError(f"Document not found: {path}")
     
@@ -564,7 +582,7 @@ def modify_document():
         
         # Clear content and insert new content
         text = doc.getText()
-        text.setString("{content.replace('"', '\\"')}")
+        text.setString("{json.dumps(content)[1:-1]}")
         
         # Save document
         doc.store()
@@ -596,7 +614,7 @@ if __name__ == "__main__":
 
 def _recreate_writer_document(path: str, content: str):
     """Recreate a Writer document with new content"""
-    path_obj = Path(path)
+    path_obj = _safe_path(path)
     original_ext = path_obj.suffix.lower()
     
     # Create temporary text file with proper encoding
@@ -730,8 +748,8 @@ def _create_minimal_odt(path: Path, content: str):
 
 def _recreate_document_with_content(path: str, content: str):
     """Recreate any document with new content"""
-    # For non-Writer documents, just create a text file with the correct extension
-    with open(path, 'w') as f:
+    safe = _safe_path(path)
+    with open(safe, 'w') as f:
         f.write(content)
 
 
@@ -793,7 +811,7 @@ def search_documents(query: str, search_path: Optional[str] = None) -> List[Dict
     results = []
     
     if search_path:
-        search_paths = [Path(search_path)]
+        search_paths = [_safe_path(search_path)]
     else:
         search_paths = [
             Path.home() / "Documents",
@@ -865,8 +883,8 @@ def batch_convert_documents(source_dir: str, target_dir: str, target_format: str
         target_format: Target format for conversion
         source_extensions: List of source file extensions to convert (default: common formats)
     """
-    source_path = Path(source_dir)
-    target_path = Path(target_dir)
+    source_path = _safe_path(source_dir)
+    target_path = _safe_path(target_dir)
     
     if not source_path.exists():
         raise FileNotFoundError(f"Source directory not found: {source_dir}")
@@ -1099,7 +1117,7 @@ def open_document_in_libreoffice(path: str, readonly: bool = False) -> Dict[str,
         path: Path to the document to open
         readonly: Whether to open in read-only mode (default: False)
     """
-    path_obj = Path(path)
+    path_obj = _safe_path(path)
     if not path_obj.exists():
         raise FileNotFoundError(f"Document not found: {path}")
     
@@ -1116,6 +1134,7 @@ def open_document_in_libreoffice(path: str, readonly: bool = False) -> Dict[str,
         # Start LibreOffice GUI (non-blocking)
         process = subprocess.Popen(
             cmd,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True  # Detach from parent process
@@ -1141,7 +1160,7 @@ def refresh_document_in_libreoffice(path: str) -> Dict[str, Any]:
     Args:
         path: Path to the document that should be refreshed
     """
-    path_obj = Path(path)
+    path_obj = _safe_path(path)
     if not path_obj.exists():
         raise FileNotFoundError(f"Document not found: {path}")
     
@@ -1189,7 +1208,7 @@ def watch_document_changes(path: str, duration_seconds: int = 30) -> Dict[str, A
         path: Path to the document to watch
         duration_seconds: How long to watch for changes (default: 30 seconds)
     """
-    path_obj = Path(path)
+    path_obj = _safe_path(path)
     if not path_obj.exists():
         raise FileNotFoundError(f"Document not found: {path}")
     
@@ -1254,7 +1273,7 @@ def create_live_editing_session(path: str, auto_refresh: bool = True) -> Dict[st
         path: Path to the document for live editing
         auto_refresh: Whether to enable automatic refresh detection
     """
-    path_obj = Path(path)
+    path_obj = _safe_path(path)
     
     try:
         # 1. Open the document in LibreOffice GUI

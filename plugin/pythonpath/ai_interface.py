@@ -8,6 +8,7 @@ with the LibreOffice MCP server.
 import asyncio
 import json
 import logging
+import os
 import threading
 from typing import Dict, Any, Optional
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -28,8 +29,23 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
         self.mcp_server = get_mcp_server()
         super().__init__(*args, **kwargs)
     
+    def _check_auth(self) -> bool:
+        """Require Bearer token if MCP_AUTH_TOKEN is set; always reject non-localhost."""
+        if self.client_address[0] not in ('127.0.0.1', '::1'):
+            self._send_response(403, {"error": "Remote access denied"})
+            return False
+        token = os.environ.get('MCP_AUTH_TOKEN')
+        if token:
+            auth_header = self.headers.get('Authorization', '')
+            if auth_header != f'Bearer {token}':
+                self._send_response(401, {"error": "Unauthorized"})
+                return False
+        return True
+
     def do_GET(self):
         """Handle GET requests"""
+        if not self._check_auth():
+            return
         try:
             parsed_path = urlparse(self.path)
             path = parsed_path.path
@@ -49,6 +65,8 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
     
     def do_POST(self):
         """Handle POST requests"""
+        if not self._check_auth():
+            return
         try:
             parsed_path = urlparse(self.path)
             path = parsed_path.path
@@ -135,7 +153,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
     
     def _send_cors_headers(self):
         """Send CORS headers"""
-        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Origin', 'http://localhost')
         self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
     
