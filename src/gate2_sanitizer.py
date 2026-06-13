@@ -22,9 +22,15 @@ _PATTERNS: List[re.Pattern] = [
         r'(instructions?|context|training|prompts?)\b',
         re.IGNORECASE,
     ),
-    # (you are|you're) (now|a) (an? )?(AI|assistant|GPT|Claude|LLM|model|chatbot)
+    # "you are/you're now [a/an] [optional filler words] AI/assistant/..."
+    # Handles: "you are now a different AI", "you're now an assistant", etc.
     re.compile(
-        r"\byou\s*(?:'re|are)\s+(?:now|a)\s+(?:an?\s+)?"
+        r"\byou\s*(?:'re|are)\s+now\s+(?:\w+\s+){0,3}"
+        r"(?:AI|assistant|ChatGPT|GPT|Claude|LLM|model|chatbot)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\byou\s*(?:'re|are)\s+(?:a(?:n?\s+)?)(?:\w+\s+){0,2}"
         r"(?:AI|assistant|ChatGPT|GPT|Claude|LLM|model|chatbot)\b",
         re.IGNORECASE,
     ),
@@ -43,9 +49,11 @@ _PATTERNS: List[re.Pattern] = [
         r'\b(?:pretend\s+(?:you\s+are|to\s+be)|act\s+as\s+(?:a|an|if))\b',
         re.IGNORECASE,
     ),
-    # disregard / override (your|all) (instructions|training|context)
+    # disregard / override (your|all) [optional second qualifier] (instructions|...)
+    # Handles: "disregard your instructions", "disregard your previous instructions"
     re.compile(
         r'\b(?:disregard|override)\s+(?:your|all|previous|prior)\s+'
+        r'(?:(?:previous|prior|all|your)\s+)?'
         r'(?:instructions?|training|context|prompts?)\b',
         re.IGNORECASE,
     ),
