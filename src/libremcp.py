@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -17,6 +18,11 @@ from typing import Any, Dict, List, Optional, Union
 from dataclasses import dataclass
 from datetime import datetime
 from xml.sax.saxutils import escape as _xml_escape
+
+try:
+    from .gate2_sanitizer import sanitize_document_output
+except ImportError:
+    from gate2_sanitizer import sanitize_document_output
 
 import httpx
 from pydantic import BaseModel, Field
@@ -321,6 +327,12 @@ def read_document_text(path: str) -> TextContent:
                         content = path_obj.read_text(encoding='utf-8', errors='ignore')
                     except:
                         raise RuntimeError(f"Could not extract text. LibreOffice output: {result.stderr}. Files created: {[f.name for f in created_files]}")
+        
+        # Gate 2: sanitize prompt-injection markers from document text
+        content, warnings = sanitize_document_output(content, str(path_obj))
+        if warnings:
+            for w in warnings:
+                print(f"GATE2: {w}", file=sys.stderr)
         
         word_count = len(content.split())
         char_count = len(content)
@@ -791,9 +803,10 @@ def get_document_content(path: str) -> str:
             actual_path = '/' + path
             
         content = read_document_text(actual_path)
-        return f"Document: {Path(actual_path).name}\n" + \
-               f"Words: {content.word_count}, Characters: {content.char_count}\n\n" + \
-               content.content
+        # content.content is already Gate 2 sanitized by read_document_text()
+        return (f"Document: {Path(actual_path).name}\n"
+                f"Words: {content.word_count}, Characters: {content.char_count}\n\n"
+                + content.content)
     except Exception as e:
         return f"Error reading document {path}: {str(e)}"
 
